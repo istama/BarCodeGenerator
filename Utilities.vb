@@ -123,7 +123,7 @@ Namespace Utils
       End Function
 
       Public Function IsLatestVersion(cmpVer As String) As Boolean
-        Dim v As String = AppProperties.SETTING.GetValue(AppProperties.KEY_CURRENT_VERSION)
+        Dim v As String = CurrentVersion()
         Dim vl As String() = v.Split(".")
         Dim cvl As String() = cmpVer.Split(".")
 

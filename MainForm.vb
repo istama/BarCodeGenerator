@@ -1,19 +1,40 @@
 ﻿
 Imports System.IO
 Imports System.Drawing.Printing
+Imports MP.Details.IO
 Imports MP.Utils.Common
 Imports MP.BarCodeGenerator
 
 Public Class MainForm
+  Private Setting As AppProperties.Entry = AppProperties.SETTING
 
   Private LBoxOfCodeAndCnt As ListBoxOfCodeAndCnt
 
-  Private DocPrint As Bitmap
+  Private BarCode As Print.BarCode
   Private PageSetting As New PageSettings
 
   Private Sub MainForm_Load(sender As Object, e As EventArgs) Handles MyBase.Load
+    Try
+      AutoUpdate()
+    Catch ex As Exception
+    End Try
+
     txtCode.Focus()
     LBoxOfCodeAndCnt = New ListBoxOfCodeAndCnt(lboxOutputCode, lboxOutputCnt)
+    BarCode = New Print.BarCode()
+
+    PageSetting = PrintDocument1.DefaultPageSettings
+  End Sub
+
+  Private Sub AutoUpdate()
+    Dim versionFilePath = Setting.GetValue(AppProperties.KEY_RELEASE_VERSIONINFO_FILE_DIR) & "\" & Setting.GetValue(AppProperties.KEY_RELEASE_VERSIONINFO_FILE_NAME)
+    Dim text As List(Of String) = FileAccessor.Read(versionFilePath)
+    If text.Count > 0 AndAlso Not Version.IsLatestVersion(text(0)) Then
+      MessageBox.Show("最新のバージョンに更新します。", "確認", MessageBoxButtons.OK, MessageBoxIcon.Information)
+      System.Diagnostics.Process.Start(FilePath.ScriptForUpdatePath())
+      MessageBox.Show("更新終了しました。再起動して下さい。", "確認", MessageBoxButtons.OK, MessageBoxIcon.Information)
+      Me.Close()
+    End If
   End Sub
 
   Private Sub TextBox_KeyPress(ByVal sender As Object, ByVal e As System.Windows.Forms.KeyPressEventArgs) Handles txtCode.KeyPress, txtPrefix.KeyPress, txtSufix.KeyPress
@@ -44,7 +65,7 @@ Public Class MainForm
     Dim sufix As String = txtSufix.Text
     Dim cnt As String = cboxOutputCnt.SelectedItem
 
-    Dim output As String = prefix & code & sufix
+    Dim output As String = Padding0ToOutputCode(prefix, code, sufix)
     If output.Length = 0 Then
       MessageBox.Show("コードが入力されていません。")
     ElseIf Not Char.IsDigit(cnt) OrElse cnt <= 0 Then
@@ -56,6 +77,8 @@ Public Class MainForm
     Else
       LBoxOfCodeAndCnt.Add(output, Integer.Parse(cnt))
       txtCode.Text = ""
+      UpdateLabelOfCodeAndOutputCnt()
+      cmdOutput.Enabled = False
       txtCode.Focus()
     End If
   End Sub
@@ -63,6 +86,36 @@ Public Class MainForm
   Private Function IsCodeLengthValid(code As String) As Boolean
     Dim item As String = cboxCodeLength.SelectedItem
     Return Not Char.IsDigit(item) OrElse code.Length = Integer.Parse(item)
+  End Function
+
+  Private Function Padding0ToOutputCode(prefix As String, code As String, sufix As String) As String
+    Dim joined As String = prefix & code & sufix
+
+    If Not chk0Padd.Checked OrElse Not Char.IsDigit(cboxCodeLength.SelectedItem) Then
+      Return joined
+    Else
+      Dim length As Integer = Integer.Parse(cboxCodeLength.SelectedItem)
+      Dim padcnt As Integer = length - joined.Length
+
+      If padcnt > 0 AndAlso chk0Padd.Checked = True Then
+        Dim zero As String = New String("0"c, padcnt)
+
+        Dim loc As String = cbox0PadLocation.SelectedItem
+        If loc = "接頭辞の前" Then
+          Return zero & joined
+        ElseIf loc = "接頭辞の後" Then
+          Return prefix & zero & code & sufix
+        ElseIf loc = "接尾辞の前" Then
+          Return prefix & code & zero & sufix
+        ElseIf loc = "接尾辞の後" Then
+          Return joined & zero
+        Else
+          Return joined
+        End If
+      Else
+        Return joined
+      End If
+    End If
   End Function
 
   Private Sub lboxOutputCode_SelectedIndexChanged(sender As Object, e As EventArgs) Handles lboxOutputCode.SelectedIndexChanged
@@ -75,83 +128,55 @@ Public Class MainForm
 
   Private Sub cmdCodeRemove_Click(sender As Object, e As EventArgs) Handles cmdCodeRemove.Click
     LBoxOfCodeAndCnt.RemoveSelectedItems()
+    UpdateLabelOfCodeAndOutputCnt()
   End Sub
 
   Private Sub cmdCodeClear_Click(sender As Object, e As EventArgs) Handles cmdCodeClear.Click
+    If MessageBox.Show("クリアしてよろしいですか？", "確認", MessageBoxButtons.OKCancel, MessageBoxIcon.Exclamation) = DialogResult.OK Then
+      ClearOutputCodeList()
+    End If
+  End Sub
+
+  Private Sub ClearOutputCodeList()
     LBoxOfCodeAndCnt.Clear()
+    UpdateLabelOfCodeAndOutputCnt()
+  End Sub
+
+  Private Sub UpdateLabelOfCodeAndOutputCnt()
+    lblCodeCnt.Text = LBoxOfCodeAndCnt.CntCode()
+    lblOutputCnt.Text = LBoxOfCodeAndCnt.CntAll()
   End Sub
 
   Private Sub lboxOutputCnt_DoubleCkick(sender As Object, e As EventArgs) Handles lboxOutputCnt.DoubleClick
-    MessageBox.Show(sender.ToString & " " & lboxOutputCnt.SelectedIndex)
-
-  End Sub
-
-  Private Sub cmdPreview_Click(sender As Object, e As EventArgs) Handles cmdPreview.Click
-    Draw()
-    PreviewForm.ShowDialog()
+    'MessageBox.Show(sender.ToString & " " & lboxOutputCnt.SelectedIndex)
   End Sub
 
   Private Sub Draw()
-    PreviewForm.TableLayoutPanel1.Controls.Clear()
+    If LBoxOfCodeAndCnt.CntCode > 0 Then
+      BarCode.Draw(LBoxOfCodeAndCnt.OutputCodeList())
+    Else
+      Throw New Exception("コードが入力されていません。")
+    End If
+  End Sub
 
+  Private Sub cmdPreview_Click(sender As Object, e As EventArgs) Handles cmdPreview.Click
     Try
-      Dim col As Integer = PreviewForm.TableLayoutPanel1.ColumnCount
-      Dim barCodeDrawer As Graphic.BarCodeDrawer = New Graphic.BarCodeDrawer(BCFont.NW7.CreateFont(14), New Font("MS UI Gothic", 11, FontStyle.Regular))
-
-      If LBoxOfCodeAndCnt.CntCode() > 0 Then
-        Dim codeList As List(Of String) = LBoxOfCodeAndCnt.OutputCodeList()
-
-        For idx As Integer = 0 To (codeList.Count - 1)
-          Dim r As Integer = Math.Truncate(idx / col)
-          Dim c As Integer = idx Mod col
-
-          If r < PreviewForm.TableLayoutPanel1.RowCount Then
-            Dim panel As Panel = barCodeDrawer.Create(codeList(idx))
-            PreviewForm.TableLayoutPanel1.Controls.Add(panel, c, r)
-          End If
-
-        Next
-      End If
+      ShowPrintPreview()
+      cmdOutput.Enabled = True
     Catch ex As Exception
-      MsgBox.ShowError(ex)
+      MsgBox.ShowWarn(ex)
     End Try
   End Sub
 
   Private Sub cmdOutput_Click(sender As Object, e As EventArgs) Handles cmdOutput.Click
-    Draw()
-
-    PreviewForm.Show()
-    Dim ctrl As Control = PreviewForm.TableLayoutPanel1
-
-    'プリントスクリーンによるキャプチャ
-    Dim bmp3 As Bitmap = CaptureControlPS(ctrl)
-    bmp3.Save("C:\Users\Blue\3.png")
-    bmp3.Dispose()
-
-    PreviewForm.Close()
+    Try
+      ShowPrintDialog()
+    Catch ex As Exception
+      MsgBox.ShowWarn(ex)
+    End Try
   End Sub
 
-  <System.Runtime.InteropServices.DllImport("User32.dll")>
-  Private Shared Function PrintWindow(ByVal hwnd As IntPtr,
-    ByVal hDC As IntPtr, ByVal nFlags As Integer) As Boolean
-  End Function
-
-  ''' <summary>
-  ''' コントロールのイメージを取得する
-  ''' </summary>
-  ''' <param name="ctrl">キャプチャするコントロール</param>
-  ''' <returns>取得できたイメージ</returns>
-  Public Function CaptureControlPS(ByVal ctrl As Control) As Bitmap
-    Dim img As New Bitmap(ctrl.Width, ctrl.Height)
-    Dim memg As Graphics = Graphics.FromImage(img)
-    Dim dc As IntPtr = memg.GetHdc()
-    PrintWindow(ctrl.Handle, dc, 0)
-    memg.ReleaseHdc(dc)
-    memg.Dispose()
-    Return img
-  End Function
-
-  Private Sub 印刷ToolStripMenuItem1_Click(sender As Object, e As EventArgs) Handles 印刷ToolStripMenuItem1.Click
+  Private Sub ShowPrintDialog()
     'PrintDocument
     '  プリンタの設定（PrinterSettingsクラス）や印刷の設定（PageSettingsクラス）を行い
     '  Print()で印刷処理の一連のプロセスを開始する。
@@ -160,39 +185,61 @@ Public Class MainForm
     '  なので、印刷内容はこのPrintPageイベントハンドラに記述する。
     'PrintDialog
     '  出力先のプリンタや印刷範囲などの印刷設定を行う印刷ダイアログボックスを開く。
+    'PrintPreviewDialog
+    '  印刷プレビューを開く。
+    '  開いたときにPrintPageイベントハンドラが呼び出される。
+    'PrintPreviewControl
+    '  印刷プレビューのフォームを自分で作るためのコントロール。
+    '  開いたときにPrintPageイベントハンドラが呼び出される。
+    'PageSetupDialog
+    '  印刷ページの設定ダイアログを開く。
 
+    'PageSetting = PrintDocument1.DefaultPageSettings
+    'DocPrint = CaptureControlPS(BarCodeForm.TableLayoutPanel1)
+    PrintDialog1.Document = PrintDocument1
 
-    Try
-      PageSetting = PrintDocument1.DefaultPageSettings
-      'DocPrint = CaptureControlPS(PreviewForm.TableLayoutPanel1)
-      PrintDialog1.Document = PrintDocument1
-
-      'プリンタの選択や印刷設定を行うダイアログを表示する
-      If PrintDialog1.ShowDialog() = DialogResult.OK Then
-        PrintDocument1.Print()
-      End If
-    Catch ex As Exception
-      MsgBox.ShowWarn(ex)
-    End Try
+    'プリンタの選択や印刷設定を行うダイアログを表示する
+    If PrintDialog1.ShowDialog() = DialogResult.OK Then
+      PrintDocument1.Print()
+      ClearOutputCodeList()
+      txtCode.Focus()
+      cmdOutput.Enabled = False
+    End If
   End Sub
 
-  Private Sub 印刷プレビューToolStripMenuItem_Click(sender As Object, e As EventArgs) Handles 印刷プレビューToolStripMenuItem.Click
+  'Private Sub ページ設定ToolStripMenuItem_Click(sender As Object, e As EventArgs) Handles ページ設定ToolStripMenuItem.Click
+  '  PageSetupDialog1.PageSettings = PageSetting
+  '  PageSetupDialog1.ShowDialog()
+  'End Sub
 
-
+  Private Sub ShowPrintPreview()
+    PrintDocument1.DefaultPageSettings = PageSetting
+    'PrintPreviewDialog1.Document = PrintDocument1
+    'PrintPreviewDialog1.ShowDialog()
+    PreviewForm.PrintPreviewControl1.Document = PrintDocument1
+    PreviewForm.PrintPreviewControl1.Show()
+    PreviewForm.ShowDialog()
   End Sub
 
   Private Sub PrintDocument1_PrintPage(sender As Object, e As PrintPageEventArgs) Handles PrintDocument1.PrintPage
     'PrintDocument.Print()を実行すると呼び出される。
     'どのような印刷を行うのかをここで指定する。
     'MessageBox.Show("PrintDocument1_PrintPage")
-
-    Draw()
-    PreviewForm.Show()
-    e.Graphics.DrawImage(CaptureControlPS(PreviewForm.TableLayoutPanel1), 0, 0)
-    PreviewForm.Close()
-    e.HasMorePages = False
+    Try
+      Draw()
+      Dim bmp As Bitmap = BarCode.NextPrintPage()
+      e.Graphics.DrawImage(bmp, 0, 0)
+      If BarCode.HasNextPrintPage() Then
+        e.HasMorePages = True
+      Else
+        e.HasMorePages = False
+        BarCode.ToStartPrintPage()
+        PreviewForm.PrintPreviewControl1.Rows = BarCode.CntPrintPage()
+      End If
+    Catch ex As Exception
+      MsgBox.ShowWarn(ex)
+    End Try
   End Sub
-
 
 End Class
 
